@@ -1,0 +1,75 @@
+// Top-level for Boolean board (XC7S50CSGA324-1)
+// Port names match the XDC exactly: clk, sw, btn, led, UART_txd
+module boolean_top (
+    input  wire        clk,
+    input  wire [15:0] sw,
+    input  wire [3:0]  btn,
+    output wire [15:0] led,
+    output wire        UART_txd
+);
+
+    wire        gate_ah, gate_al;
+    wire        gate_bh, gate_bl;
+    wire        gate_ch, gate_cl;
+    wire [7:0]  status_led;
+    wire        uart_tx_int;
+    wire [11:0] dbg_ia, dbg_ib, dbg_ic;
+    wire [15:0] dbg_speed, dbg_torque;
+    wire [3:0]  dbg_fault_code;
+    wire        dbg_pwm_inh;
+
+    motor_control_top #(
+        .CLK_FREQ_HZ (100_000_000),
+        .PWM_FREQ_HZ (20_000)
+    ) u_mct (
+        .clk              (clk),
+        .rst_n            (~btn[0]),
+        .motor_enable     (sw[0]),
+        .mode_sel         (sw[1]),
+        .speed_sw         (sw[15:8]),
+        .fault_clear_btn  (btn[1]),
+        .inject_en        (btn[2]),
+        .fault_inject_sel (sw[5:2]),
+        .gate_ah          (gate_ah),
+        .gate_al          (gate_al),
+        .gate_bh          (gate_bh),
+        .gate_bl          (gate_bl),
+        .gate_ch          (gate_ch),
+        .gate_cl          (gate_cl),
+        .status_led       (status_led),
+        .uart_tx          (uart_tx_int),
+        .dbg_ia           (dbg_ia),
+        .dbg_ib           (dbg_ib),
+        .dbg_ic           (dbg_ic),
+        .dbg_speed        (dbg_speed),
+        .dbg_torque       (dbg_torque),
+        .dbg_fault_code   (dbg_fault_code),
+        .dbg_pwm_inh      (dbg_pwm_inh)
+    );
+
+    // Prevent optimizer from sweeping debug wires -
+    // XOR them into a spare LED so they are "used"
+    wire dbg_keep = ^dbg_ia ^ ^dbg_ib ^ ^dbg_ic
+                  ^ ^dbg_speed ^ ^dbg_torque;
+
+    // LED assignments - all 16 LEDs driven, nothing left floating
+    assign led[0]     = status_led[0];   // hall_sector[0]
+    assign led[1]     = status_led[1];   // hall_sector[1]
+    assign led[2]     = status_led[2];   // hall_sector[2]
+    assign led[3]     = status_led[3];   // zc_detected
+    assign led[4]     = status_led[4];   // hall_valid
+    assign led[5]     = status_led[5];   // fi_active
+    assign led[6]     = status_led[6];   // fault_any
+    assign led[7]     = status_led[7];   // motor_enable
+    assign led[8]     = gate_ah;         // Phase A high PWM
+    assign led[9]     = gate_ch;         // Phase C high PWM
+    assign led[10]    = dbg_fault_code[0];
+    assign led[11]    = dbg_fault_code[1];
+    assign led[12]    = dbg_fault_code[2];
+    assign led[13]    = dbg_fault_code[3];
+    assign led[14]    = dbg_pwm_inh;     // Protection inhibit
+    assign led[15]    = dbg_keep;        // Keeps debug logic alive
+
+    assign UART_txd   = uart_tx_int;
+
+endmodule
