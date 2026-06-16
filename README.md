@@ -187,6 +187,13 @@ streamOut pnr/gdsii/motor_ctrl_top.gds
 <img width="891" height="829" alt="image" src="https://github.com/user-attachments/assets/ac6945d5-00b0-4f0b-b31c-3cf189b5f31d" />
 
 
+## Authors
 
+Capstone Project — Saveetha Engineering College, 2026
+
+| Name     | Roll No.      | Department                                  |
+|----------|---------------|---------------------------------------------|
+| Divya J  | 212223060060  | Electronics & Communication Engineering     |
+| Uma E S  | 212223060293  | Electronics & Communication Engineering     |
 
 
