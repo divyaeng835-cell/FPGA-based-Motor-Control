@@ -72,11 +72,6 @@ The IP was validated through:
           │   ├── pynq_z2.xdc
           │   └── spartan7.xdc
           │
-          ├── ip_package/
-          │   ├── IP_design.png
-          │   ├── zynq_block_design.png
-          │   └── netlist.png
-          │
           ├── genus/
           │   ├── script.tcl
           │   └── constraint.sdc
@@ -162,6 +157,9 @@ Program board via Hardware Manager
 
 ## IP Packaging
 The design is packaged as a reusable Vivado IP core (ip_package/component.xml), allowing drag-and-drop integration into any block design.
+
+
+<img width="1631" height="906" alt="image" src="https://github.com/user-attachments/assets/2a0f9e9d-fd4c-475a-a93c-a02d6bf11d0b" />
 
 
 ## 🔬 ASIC Flow — Cadence Genus + Innovus (GDSII)
