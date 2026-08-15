@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 module virtual_adc #(
     parameter ADC_WIDTH = 12
 )(
