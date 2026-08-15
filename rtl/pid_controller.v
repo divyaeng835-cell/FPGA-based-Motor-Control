@@ -1,4 +1,5 @@
-
+`timescale 1ns / 1ps
+ 
 module pid_controller #(
     parameter DATA_WIDTH = 16,
     parameter ACC_WIDTH  = 32
