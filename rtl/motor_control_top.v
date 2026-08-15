@@ -1,34 +1,38 @@
 module motor_control_top #(
-    parameter CLK_FREQ_HZ = 100_000_000,
-    parameter PWM_FREQ_HZ = 20_000,
-    parameter ADC_WIDTH   = 12,
-    parameter CNT_WIDTH   = 16,
-    parameter DATA_WIDTH  = 16
+    parameter CLK_FREQ_HZ    = 100_000_000,
+    parameter PWM_FREQ_HZ    = 20_000,
+    parameter ADC_WIDTH      = 12,
+    parameter CNT_WIDTH      = 16,
+    parameter DATA_WIDTH     = 16,
+    // FIX: was hardcoded inside the protection_unit instance below; exposed
+    // here so testbenches can override it (e.g. to a few hundred cycles)
+    // without touching the real 50ms hardware default.
+    parameter LOCKOUT_CYCLES = 24'd5_000_000
 )(
-    // ── System ────────────────────────────────────────────────────────────────
+    // -- System ----------------------------------------------------------------
     input  wire        clk,
     input  wire        rst_n,
- 
-    // ── Control inputs (PYNQ-Z2: SW0, SW1, BTN0-BTN3, Arduino header) ────────
+
+    // -- Control inputs (PYNQ-Z2: SW0, SW1, BTN0-BTN3, Arduino header) ----------
     input  wire        motor_enable,       // SW0  - master enable
     input  wire        mode_sel,           // SW1  - 0=V/Hz  1=direct duty
     input  wire [7:0]  speed_sw,           // Arduino A0-A7 - speed command
     input  wire        fault_clear_btn,    // BTN1 - clear latched faults
     input  wire        inject_en,          // BTN2 - trigger fault injection
     input  wire [3:0]  fault_inject_sel,   // BTN3+SW0-SW2 - fault type select
- 
-    // ── Gate drive outputs (PMOD JA pins 1-6) ─────────────────────────────────
+
+    // -- Gate drive outputs (PMOD JA pins 1-6) -----------------------------------
     output wire        gate_ah, gate_al,   // Phase A high/low side
     output wire        gate_bh, gate_bl,   // Phase B high/low side
     output wire        gate_ch, gate_cl,   // Phase C high/low side
- 
-    // ── Status (PYNQ-Z2: LD0-LD3 + LD4/LD5 RGB) ───────────────────────────────
+
+    // -- Status (PYNQ-Z2: LD0-LD3 + LD4/LD5 RGB) ---------------------------------
     output wire [7:0]  status_led,
- 
-    // ── UART telemetry (PYNQ-Z2 USB-UART bridge pin) ─────────────────────────
+
+    // -- UART telemetry (PYNQ-Z2 USB-UART bridge pin) ----------------------------
     output wire        uart_tx,
- 
-    // ── ILA / debug probes ────────────────────────────────────────────────────
+
+    // -- ILA / debug probes -------------------------------------------------------
     output wire [11:0] dbg_ia,
     output wire [11:0] dbg_ib,
     output wire [11:0] dbg_ic,
@@ -37,7 +41,7 @@ module motor_control_top #(
     output wire [3:0]  dbg_fault_code,
     output wire        dbg_pwm_inh
 );
- 
+
     // =========================================================================
     // Local parameters  (FIX: no SystemVerilog cast - use localparam)
     // =========================================================================
@@ -45,70 +49,81 @@ module motor_control_top #(
     localparam [CNT_WIDTH-1:0] PWM_HALF_PERIOD = CLK_FREQ_HZ / (2 * PWM_FREQ_HZ);
     localparam [7:0]           DT_CYCLES        = 8'd50;   // 500 ns dead-time @ 100 MHz
     localparam [CNT_WIDTH-1:0] BAUD_DIV         = CLK_FREQ_HZ / 115200; // ~868
- 
+
     // =========================================================================
     // Internal wires
     // =========================================================================
- 
+
     // PWM carrier outputs (before dead-time)
     wire pwm_a_h, pwm_b_h, pwm_c_h;
     wire pwm_sync;
- 
+
     // Duty cycle / period from controller
     wire [CNT_WIDTH-1:0] duty_a_ctrl, duty_b_ctrl, duty_c_ctrl;
     wire [CNT_WIDTH-1:0] period_ctrl;
- 
+
     // Speed command extended to CNT_WIDTH (FIX: clean zero-extension, no $signed)
     wire [CNT_WIDTH-1:0] speed_cmd_ext = {{(CNT_WIDTH-8){1'b0}}, speed_sw};
- 
+
     // PID output
     wire signed [DATA_WIDTH-1:0] pid_output;
- 
+
+    // FIX: pid_output was computed but never connected anywhere - the motor
+    // ran fully open-loop V/Hz with a fixed modulation index. This closes
+    // the speed loop: pid_output (range -1000..+1000 from u_pid's
+    // out_min/out_max) trims a base modulation index of 200/255 (~78%),
+    // scaled down and clamped to a valid 0..255 modulation range.
+    localparam signed [15:0] MOD_BASE = 16'sd200;
+    wire signed [15:0] mod_idx_sum = MOD_BASE + (pid_output >>> 3);
+    wire [7:0] modulation_idx_dyn = (mod_idx_sum < 16'sd0)   ? 8'd0   :
+                                     (mod_idx_sum > 16'sd255) ? 8'd255 :
+                                     mod_idx_sum[7:0];
+
     // Protection
     wire        pwm_inhibit;
     wire [3:0]  fault_code;
     wire        fault_any;
     wire        fault_oc, fault_ov, fault_ot, fault_sc;
- 
+
     // Hall / sensor interface
     wire [2:0]           hall_sector;
     wire [15:0]          hall_period;
     wire                 hall_valid;
     wire [ADC_WIDTH-1:0] adc_ch0, adc_ch1, adc_ch2;
- 
+
     // Sensorless controller
     wire [15:0]          rotor_angle;
     wire [15:0]          rotor_speed;
     wire [2:0]           next_sector;
     wire                 zc_detected;
- 
+
     // Torque estimator
     wire [23:0]          torque_est, power_est;
     wire [ADC_WIDTH-1:0] irms_est;
- 
+
     // Virtual motor model
     wire [ADC_WIDTH-1:0] vm_ia, vm_ib, vm_ic;
     wire [ADC_WIDTH-1:0] vm_bemf_a, vm_bemf_b, vm_bemf_c;
     wire [DATA_WIDTH-1:0] vm_speed;
     wire [ADC_WIDTH-1:0] vm_vdc_half;
- 
+
     // Virtual Hall
     wire vhall_a, vhall_b, vhall_c;
- 
+
     // Virtual ADC SPI bus (internal loopback)
     wire vadc_sdo;
     wire sens_sck, sens_cs_n;
     wire [1:0] sens_ch_sel;
- 
+
     // Fault injector outputs
     wire [ADC_WIDTH-1:0] fi_ia, fi_ib, fi_ic, fi_vbus, fi_temp;
     wire                 fi_active;
- 
+
     // Raw gate signals before global inhibit
     wire g_ah_raw, g_al_raw;
     wire g_bh_raw, g_bl_raw;
     wire g_ch_raw, g_cl_raw;
- 
+
     // =========================================================================
     // u_dfc : duty_frequency_controller
     // =========================================================================
@@ -122,7 +137,7 @@ module motor_control_top #(
         .mode_sel       (mode_sel),
         .speed_cmd      (speed_cmd_ext),
         .pwm_period     (PWM_HALF_PERIOD),
-        .modulation_idx (8'd200),
+        .modulation_idx (modulation_idx_dyn),
         .pwm_sync       (pwm_sync),
         .duty_a_in      ({CNT_WIDTH{1'b0}}),
         .duty_b_in      ({CNT_WIDTH{1'b0}}),
@@ -132,7 +147,7 @@ module motor_control_top #(
         .duty_b         (duty_b_ctrl),
         .duty_c         (duty_c_ctrl)
     );
- 
+
     // =========================================================================
     // u_pid : pid_controller  (speed loop)
     // =========================================================================
@@ -153,7 +168,7 @@ module motor_control_top #(
         .pid_out   (pid_output),
         .saturated ()
     );
- 
+
     // =========================================================================
     // u_pwm : three_phase_pwm
     // =========================================================================
@@ -172,7 +187,7 @@ module motor_control_top #(
         .pwm_c_h    (pwm_c_h),
         .sync_pulse (pwm_sync)
     );
- 
+
     // =========================================================================
     // u_dt_a/b/c : deadtime_inserter  (one per phase)
     // =========================================================================
@@ -184,7 +199,7 @@ module motor_control_top #(
         .gate_h          (g_ah_raw),
         .gate_l          (g_al_raw)
     );
- 
+
     deadtime_inserter #(.DT_CYCLES(DT_CYCLES)) u_dt_b (
         .clk             (clk),
         .rst_n           (rst_n),
@@ -193,7 +208,7 @@ module motor_control_top #(
         .gate_h          (g_bh_raw),
         .gate_l          (g_bl_raw)
     );
- 
+
     deadtime_inserter #(.DT_CYCLES(DT_CYCLES)) u_dt_c (
         .clk             (clk),
         .rst_n           (rst_n),
@@ -202,7 +217,7 @@ module motor_control_top #(
         .gate_h          (g_ch_raw),
         .gate_l          (g_cl_raw)
     );
- 
+
     // Global protection inhibit applied as AND mask
     assign gate_ah = g_ah_raw & ~pwm_inhibit;
     assign gate_al = g_al_raw & ~pwm_inhibit;
@@ -210,7 +225,7 @@ module motor_control_top #(
     assign gate_bl = g_bl_raw & ~pwm_inhibit;
     assign gate_ch = g_ch_raw & ~pwm_inhibit;
     assign gate_cl = g_cl_raw & ~pwm_inhibit;
- 
+
     // =========================================================================
     // u_motor : virtual_motor_model
     // =========================================================================
@@ -238,7 +253,7 @@ module motor_control_top #(
         .speed_out      (vm_speed),
         .vdc_half_out   (vm_vdc_half)
     );
- 
+
     // =========================================================================
     // u_fi : fault_injector
     // =========================================================================
@@ -263,7 +278,7 @@ module motor_control_top #(
         .temp_out      (fi_temp),
         .inject_active (fi_active)
     );
- 
+
     // =========================================================================
     // u_vadc : virtual_adc  (internal SPI loopback)
     // =========================================================================
@@ -278,7 +293,7 @@ module motor_control_top #(
         .ch_sel   (sens_ch_sel),
         .sdo      (vadc_sdo)
     );
- 
+
     // =========================================================================
     // u_vhall : virtual_hall_generator
     // =========================================================================
@@ -290,7 +305,7 @@ module motor_control_top #(
         .hall_b      (vhall_b),
         .hall_c      (vhall_c)
     );
- 
+
     // =========================================================================
     // u_sens : sensor_interface
     // =========================================================================
@@ -314,13 +329,13 @@ module motor_control_top #(
         .adc_ch1     (adc_ch1),
         .adc_ch2     (adc_ch2)
     );
- 
+
     // =========================================================================
     // u_prot : protection_unit
     // =========================================================================
     protection_unit #(
         .ADC_WIDTH      (ADC_WIDTH),
-        .LOCKOUT_CYCLES (24'd5_000_000)
+        .LOCKOUT_CYCLES (LOCKOUT_CYCLES)
     ) u_prot (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -342,7 +357,7 @@ module motor_control_top #(
         .fault_any        (fault_any),
         .fault_code       (fault_code)
     );
- 
+
     // =========================================================================
     // u_sens_ctrl : sensorless_controller
     // =========================================================================
@@ -363,7 +378,7 @@ module motor_control_top #(
         .next_sector (next_sector),
         .zc_detected (zc_detected)
     );
- 
+
     // =========================================================================
     // u_torq : torque_estimator
     // =========================================================================
@@ -383,7 +398,7 @@ module motor_control_top #(
         .power_est  (power_est),
         .irms_est   (irms_est)
     );
- 
+
     // =========================================================================
     // Status LED mapping (8 bits)
     //  [7] motor_enable  [6] fault_any  [5] fi_active
@@ -399,7 +414,7 @@ module motor_control_top #(
         hall_sector[1],
         hall_sector[0]
     };
- 
+
     // =========================================================================
     // ILA debug probes
     // =========================================================================
@@ -410,7 +425,7 @@ module motor_control_top #(
     assign dbg_torque     = torque_est[15:0];
     assign dbg_fault_code = fault_code;
     assign dbg_pwm_inh    = pwm_inhibit;
- 
+
     // =========================================================================
     // UART TX  -  8N1 @ 115200 baud
     // Continuously streams 4-byte telemetry: fault_code | speed | irms | torque
@@ -421,9 +436,9 @@ module motor_control_top #(
     reg        uart_busy;
     reg [1:0]  tx_byte_sel;
     reg [7:0]  tx_data_r;
- 
+
     assign uart_tx = uart_busy ? uart_shift[0] : 1'b1;
- 
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             uart_shift    <= 10'h3FF;
@@ -458,5 +473,5 @@ module motor_control_top #(
             end
         end
     end
- 
+
 endmodule
