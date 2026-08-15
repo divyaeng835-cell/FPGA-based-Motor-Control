@@ -1,26 +1,27 @@
+`timescale 1ns / 1ps
 module protection_unit #(
     parameter ADC_WIDTH       = 12,
     parameter LOCKOUT_CYCLES  = 24'd5_000_000  // ~50ms @ 100MHz lockout
 )(
     input  wire                  clk,
     input  wire                  rst_n,
- 
+
     // ADC sampled values (unsigned, full-scale = max voltage/current/temp)
     input  wire [ADC_WIDTH-1:0]  phase_a_current,
     input  wire [ADC_WIDTH-1:0]  phase_b_current,
     input  wire [ADC_WIDTH-1:0]  phase_c_current,
     input  wire [ADC_WIDTH-1:0]  dc_bus_voltage,
     input  wire [ADC_WIDTH-1:0]  temperature,
- 
+
     // Configurable thresholds
     input  wire [ADC_WIDTH-1:0]  oc_threshold,     // Overcurrent limit
     input  wire [ADC_WIDTH-1:0]  ov_threshold,     // Overvoltage limit
     input  wire [ADC_WIDTH-1:0]  temp_threshold,   // Over-temperature limit
     input  wire [ADC_WIDTH-1:0]  sc_threshold,     // Short-circuit (fast trip)
- 
+
     // Manual fault clear (active high pulse)
     input  wire                  fault_clear,
- 
+
     // Protection outputs
     output reg                   pwm_inhibit,      // Immediate PWM disable
     output reg                   fault_oc,         // Overcurrent fault
@@ -30,26 +31,44 @@ module protection_unit #(
     output reg                   fault_any,        // OR of all faults
     output reg [3:0]             fault_code        // Encoded fault type
 );
- 
+
     // -------------------------------------------------------------------------
     // Combinational detection (one clock latency for registered outputs)
     // -------------------------------------------------------------------------
     wire oc_detect = (phase_a_current > oc_threshold) ||
                      (phase_b_current > oc_threshold) ||
                      (phase_c_current > oc_threshold);
- 
+
     wire ov_detect = (dc_bus_voltage  > ov_threshold);
     wire ot_detect = (temperature     > temp_threshold);
     wire sc_detect = (phase_a_current > sc_threshold)  ||
                      (phase_b_current > sc_threshold)  ||
                      (phase_c_current > sc_threshold);
- 
+
     // -------------------------------------------------------------------------
     // Lockout counter - holds fault active for LOCKOUT_CYCLES after clear
     // -------------------------------------------------------------------------
     reg [23:0] lockout_cnt;
     reg        lockout_active;
- 
+
+    // FIX: fault_clear is a momentary button pulse, but lockout_active only
+    // reads 0 for a single clock cycle out of every LOCKOUT_CYCLES period
+    // while the underlying condition is still latched (fault_any stays high
+    // via the sticky fault flags, so lockout perpetually re-arms). A brief
+    // button press had to land on that exact 1-cycle window to take effect
+    // - effectively a hardware race that would almost never be hit in
+    // practice. clear_req latches the request and holds it pending until
+    // the moment lockout_active actually reads 0, so a normal button press
+    // reliably takes effect instead of silently doing nothing.
+    reg clear_req;
+
+    // FIX: the previous version dropped lockout_active to 0 the instant
+    // fault_clear was asserted, no matter what lockout_cnt held - so the
+    // 50ms minimum lockout (LOCKOUT_CYCLES) never actually applied; a fault
+    // could be cleared on the very next cycle after tripping. Now
+    // lockout_active only deasserts once the counter has counted all the
+    // way down to zero on its own; fault_clear can no longer short-circuit
+    // the timer.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             lockout_cnt    <= 24'd0;
@@ -59,16 +78,24 @@ module protection_unit #(
                 lockout_active <= 1'b1;
                 lockout_cnt    <= LOCKOUT_CYCLES;
             end else if (lockout_active) begin
-                if (fault_clear) begin
-                    lockout_active <= 1'b0;
-                    lockout_cnt    <= 24'd0;
-                end else if (lockout_cnt != 24'd0) begin
+                if (lockout_cnt != 24'd0)
                     lockout_cnt <= lockout_cnt - 1'b1;
-                end
+                else
+                    lockout_active <= 1'b0;   // minimum lockout time expired naturally
             end
         end
     end
- 
+
+    // Latch the clear button press until it can actually be applied
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            clear_req <= 1'b0;
+        else if (fault_clear)
+            clear_req <= 1'b1;
+        else if (clear_req && !lockout_active)
+            clear_req <= 1'b0;   // request consumed this cycle
+    end
+
     // -------------------------------------------------------------------------
     // Registered fault outputs
     // -------------------------------------------------------------------------
@@ -82,8 +109,10 @@ module protection_unit #(
             fault_code  <= 4'h0;
             pwm_inhibit <= 1'b0;
         end else begin
-            if (fault_clear && !lockout_active) begin
-                // Clear faults only when lockout expired
+            if (clear_req && !lockout_active) begin
+                // Clear faults only when lockout expired AND the request has
+                // been latched (FIX: no longer requires fault_clear to be
+                // literally high on the exact cycle lockout releases)
                 fault_oc    <= 1'b0;
                 fault_ov    <= 1'b0;
                 fault_ot    <= 1'b0;
@@ -97,12 +126,12 @@ module protection_unit #(
                 if (oc_detect) fault_oc <= 1'b1;
                 if (ov_detect) fault_ov <= 1'b1;
                 if (ot_detect) fault_ot <= 1'b1;
- 
+
                 fault_any   <= fault_sc | fault_oc | fault_ov | fault_ot |
                                sc_detect | oc_detect | ov_detect | ot_detect;
                 pwm_inhibit <= fault_sc | fault_oc | fault_ov | fault_ot |
                                sc_detect | oc_detect | ov_detect | ot_detect;
- 
+
                 // Priority encoding: SC > OC > OV > OT
                 if      (sc_detect || fault_sc) fault_code <= 4'h8;
                 else if (oc_detect || fault_oc) fault_code <= 4'h4;
@@ -112,5 +141,5 @@ module protection_unit #(
             end
         end
     end
- 
+
 endmodule
