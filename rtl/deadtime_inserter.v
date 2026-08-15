@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+ 
 module deadtime_inserter #(
     parameter DT_CYCLES = 8'd50
 )(
