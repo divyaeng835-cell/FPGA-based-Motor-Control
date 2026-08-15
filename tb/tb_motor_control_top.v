@@ -1,10 +1,11 @@
+`timescale 1ns / 1ps
 module tb_motor_control_top;
- 
+
     // =========================================================================
     // Parameters
     // =========================================================================
     localparam CLK_PERIOD = 10;   // 10 ns = 100 MHz
- 
+
     // =========================================================================
     // DUT signals
     // =========================================================================
@@ -16,7 +17,7 @@ module tb_motor_control_top;
     reg        fault_clear_btn = 0;
     reg        inject_en       = 0;
     reg [3:0]  fault_inject_sel = 4'd0;
- 
+
     wire       gate_ah, gate_al;
     wire       gate_bh, gate_bl;
     wire       gate_ch, gate_cl;
@@ -26,13 +27,20 @@ module tb_motor_control_top;
     wire [15:0] dbg_speed, dbg_torque;
     wire [3:0]  dbg_fault_code;
     wire        dbg_pwm_inh;
- 
+
     // =========================================================================
     // DUT instantiation
     // =========================================================================
     motor_control_top #(
-        .CLK_FREQ_HZ   (100_000_000),
-        .PWM_FREQ_HZ   (20_000)
+        .CLK_FREQ_HZ    (100_000_000),
+        .PWM_FREQ_HZ    (20_000),
+        // FIX: shortened from the real 50ms (5,000,000 cycle) hardware
+        // default so this testbench can actually observe the lockout
+        // naturally expiring in a reasonable simulation time. The fixed
+        // protection_unit now genuinely enforces this minimum duration
+        // before fault_clear can take effect - it can no longer be
+        // bypassed instantly.
+        .LOCKOUT_CYCLES (24'd500)
     ) dut (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -55,36 +63,37 @@ module tb_motor_control_top;
         .dbg_fault_code   (dbg_fault_code),
         .dbg_pwm_inh      (dbg_pwm_inh)
     );
- 
+
     // =========================================================================
     // Clock generator
     // =========================================================================
     always #(CLK_PERIOD/2) clk = ~clk;
- 
+
     // =========================================================================
     // Tasks
     // =========================================================================
     task wait_clk(input integer n);
         repeat(n) @(posedge clk);
     endtask
- 
+
     task print_status(input [127:0] msg);
         $display("[%0t ns] %s | LED=%08b | Ia=%0d Ib=%0d Ic=%0d | Spd=%0d | Tq=%0d | FaultCode=%04b | Inhibit=%b",
             $time, msg, status_led, dbg_ia, dbg_ib, dbg_ic,
             dbg_speed, dbg_torque, dbg_fault_code, dbg_pwm_inh);
     endtask
- 
+
     // =========================================================================
     // Test sequence
     // =========================================================================
     initial begin
         $dumpfile("motor_control_sim.vcd");
         $dumpvars(0, tb_motor_control_top);
- 
+
         $display("========================================");
         $display(" Motor Control IP Testbench Start");
         $display("========================================");
- 
+
+
         // -----------------------------------------------------------------
         // Test 1: Reset
         // -----------------------------------------------------------------
@@ -92,11 +101,11 @@ module tb_motor_control_top;
         motor_enable = 0;
         speed_sw     = 8'd0;
         wait_clk(20);
- 
+
         rst_n = 1;
         wait_clk(10);
         print_status("POST-RESET");
- 
+
         // -----------------------------------------------------------------
         // Test 2: Enable motor, V/Hz mode, low speed
         // -----------------------------------------------------------------
@@ -106,7 +115,7 @@ module tb_motor_control_top;
         speed_sw     = 8'd30;  // Low speed command
         wait_clk(500);
         print_status("VHz-LOW-SPD");
- 
+
         // -----------------------------------------------------------------
         // Test 3: Speed ramp
         // -----------------------------------------------------------------
@@ -116,7 +125,7 @@ module tb_motor_control_top;
             wait_clk(200);
             print_status("RAMP");
         end
- 
+
         // -----------------------------------------------------------------
         // Test 4: Direct duty override mode
         // -----------------------------------------------------------------
@@ -124,11 +133,11 @@ module tb_motor_control_top;
         mode_sel = 1;
         wait_clk(300);
         print_status("DIRECT-MODE");
- 
+
         // Back to V/Hz
         mode_sel = 0;
         wait_clk(100);
- 
+
         // -----------------------------------------------------------------
         // Test 5: Overcurrent fault injection
         // -----------------------------------------------------------------
@@ -139,30 +148,40 @@ module tb_motor_control_top;
         inject_en        = 0;
         wait_clk(100);
         print_status("OC-FAULT");
- 
+
         // Verify PWM inhibit
         if (dbg_pwm_inh)
             $display("PASS: PWM inhibited on overcurrent fault.");
         else
             $display("WARN: PWM not inhibited - check protection_unit thresholds.");
- 
+
         // Check gate outputs are all zero
         if ({gate_ah, gate_al, gate_bh, gate_bl, gate_ch, gate_cl} == 6'b0)
             $display("PASS: All gates off during fault.");
         else
             $display("WARN: Gates not fully off.");
- 
+
         // -----------------------------------------------------------------
         // Test 6: Fault clear
         // -----------------------------------------------------------------
         $display("\n--- TEST 6: Fault clear ---");
-        wait_clk(600);  // Allow lockout to expire (5M cycles in real design, shortened for sim)
+        // FIX: motor_control_top's fault_injector instance runs a fixed
+        // 5000-cycle injection duration regardless of inject_en, so the
+        // condition is still physically present at cycle ~610. Wait for
+        // the full injection window to lapse (plus the 500-cycle sim
+        // lockout override above) before attempting to clear, otherwise
+        // the fault correctly re-trips a fresh lockout on clear.
+        wait_clk(5600);
         fault_clear_btn = 1;
         wait_clk(5);
         fault_clear_btn = 0;
-        wait_clk(100);
+        // clear_req is now latched and pending; it can take up to one more
+        // full LOCKOUT_CYCLES period (500 in this sim build) to actually
+        // fire, since the last re-arm may have occurred just before the
+        // injected condition ended. Wait it out before checking the result.
+        wait_clk(600);
         print_status("AFTER-CLEAR");
- 
+
         // -----------------------------------------------------------------
         // Test 7: Overvoltage injection
         // -----------------------------------------------------------------
@@ -173,13 +192,13 @@ module tb_motor_control_top;
         inject_en        = 0;
         wait_clk(100);
         print_status("OV-FAULT");
- 
+
         wait_clk(200);
         fault_clear_btn = 1;
         wait_clk(5);
         fault_clear_btn = 0;
         wait_clk(50);
- 
+
         // -----------------------------------------------------------------
         // Test 8: Short-circuit injection (fastest protection path)
         // -----------------------------------------------------------------
@@ -190,7 +209,7 @@ module tb_motor_control_top;
         inject_en        = 0;
         wait_clk(50);
         print_status("SC-FAULT");
- 
+
         // -----------------------------------------------------------------
         // Test 9: Disable motor
         // -----------------------------------------------------------------
@@ -198,10 +217,10 @@ module tb_motor_control_top;
         motor_enable = 0;
         wait_clk(100);
         print_status("DISABLED");
- 
+
         if ({gate_ah, gate_bh, gate_ch} == 3'b000)
             $display("PASS: High-side gates off when disabled.");
- 
+
         // -----------------------------------------------------------------
         // Done
         // -----------------------------------------------------------------
@@ -210,12 +229,12 @@ module tb_motor_control_top;
         $display("========================================");
         $finish;
     end
- 
+
     // Watchdog
     initial begin
         #50_000_000;
         $display("WATCHDOG TIMEOUT");
         $finish;
     end
- 
-endmodule  
+
+endmodule
