@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 module virtual_hall_generator (
     input  wire        clk,
     input  wire        rst_n,
