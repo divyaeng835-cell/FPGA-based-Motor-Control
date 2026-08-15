@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+ 
 module virtual_motor_model #(
     parameter ADC_WIDTH  = 12,
     parameter DATA_WIDTH = 16,
@@ -138,4 +140,4 @@ module virtual_motor_model #(
         end
     end
  
-endmodule  
+endmodule   
