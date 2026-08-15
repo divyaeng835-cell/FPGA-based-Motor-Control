@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+ 
 module sensor_interface #(
     parameter DEBOUNCE_TICKS = 8'd50,   // Hall debounce filter cycles
     parameter ADC_WIDTH      = 12
