@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+ 
 module three_phase_pwm #(
     parameter CNT_WIDTH  = 16,
     parameter PERIOD_DEF = 16'd2500
@@ -51,7 +53,7 @@ module three_phase_pwm #(
         end
     end
  
-    always @(posedge clk or negedge rst_n) begin
+   always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pwm_a_h <= 1'b0; pwm_b_h <= 1'b0; pwm_c_h <= 1'b0;
             sync_pulse <= 1'b0;
@@ -65,5 +67,5 @@ module three_phase_pwm #(
             sync_pulse <= (cnt == {CNT_WIDTH{1'b0}});
         end
     end
- 
-endmodule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         `timescale 1ns / 1ps
+
+endmodule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       `timescale 1ns / 1ps
