@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+ 
 module sensorless_controller #(
     parameter ADC_WIDTH   = 12,
     parameter ANGLE_WIDTH = 16
