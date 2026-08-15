@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 module torque_estimator #(
     parameter ADC_WIDTH  = 12,
     parameter OUT_WIDTH  = 24   // Output torque/power width
