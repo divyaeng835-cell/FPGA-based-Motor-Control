@@ -1,10 +1,11 @@
+`timescale 1ns / 1ps
 module fault_injector #(
     parameter ADC_WIDTH = 12,
     parameter INJECT_DURATION = 16'd500  // Fault pulse width in clocks
 )(
     input  wire                      clk,
     input  wire                      rst_n,
- 
+
     // Fault control
     input  wire                      inject_en,   // Enable fault injection
     input  wire [3:0]                fault_sel,   // Which fault to inject:
@@ -14,37 +15,42 @@ module fault_injector #(
                                                   //  1000 = phase short-circuit
     // Injection duration override (0 = use default)
     input  wire [15:0]               duration,
- 
+
     // Pass-through inputs (from virtual motor model)
     input  wire [ADC_WIDTH-1:0]      ia_in,
     input  wire [ADC_WIDTH-1:0]      ib_in,
     input  wire [ADC_WIDTH-1:0]      ic_in,
     input  wire [ADC_WIDTH-1:0]      vbus_in,
     input  wire [ADC_WIDTH-1:0]      temp_in,
- 
+
     // Injected outputs (to protection_unit)
     output reg  [ADC_WIDTH-1:0]      ia_out,
     output reg  [ADC_WIDTH-1:0]      ib_out,
     output reg  [ADC_WIDTH-1:0]      ic_out,
     output reg  [ADC_WIDTH-1:0]      vbus_out,
     output reg  [ADC_WIDTH-1:0]      temp_out,
- 
+
     // Status
     output reg                       inject_active
 );
- 
+
     // =========================================================================
     // Pulse counter for fault duration
     // =========================================================================
     reg [15:0] cnt;
     wire [15:0] dur_use = (duration == 16'd0) ? INJECT_DURATION : duration;
- 
+
     // Override values for each fault type
-    localparam OC_INJECT_VAL = 12'hFFF;  // Max current → overcurrent
-    localparam OV_INJECT_VAL = 12'hFFF;  // Max voltage → overvoltage
-    localparam OT_INJECT_VAL = 12'hFFF;  // Max temp   → over-temp
-    localparam SC_INJECT_VAL = 12'hFFF;  // Max current → short-circuit
- 
+    // FIX: OC and SC injection values were both pinned to max-code (0xFFF),
+    // so an "overcurrent-only" injection also blew past the SC threshold
+    // (3900) and got misreported as a short-circuit fault due to priority
+    // encoding. OC_INJECT_VAL is now set between oc_threshold (3400) and
+    // sc_threshold (3900) so each fault type can be tested independently.
+    localparam OC_INJECT_VAL = 12'd3600;  // Above oc_threshold, below sc_threshold
+    localparam OV_INJECT_VAL = 12'hFFF;   // Max voltage -> overvoltage
+    localparam OT_INJECT_VAL = 12'hFFF;   // Max temp    -> over-temp
+    localparam SC_INJECT_VAL = 12'hFFF;   // Max current -> short-circuit
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cnt            <= 16'd0;
@@ -66,7 +72,7 @@ module fault_injector #(
                     cnt <= cnt - 1'b1;
                 end
             end
- 
+
             // Mux: inject or passthrough
             if (inject_active) begin
                 case (fault_sel)
@@ -115,5 +121,5 @@ module fault_injector #(
             end
         end
     end
- 
+
 endmodule
