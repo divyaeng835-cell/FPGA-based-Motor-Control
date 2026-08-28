@@ -57,12 +57,26 @@ module pid_controller #(
             integrator <= integrator_next;
     end
  
-    wire signed [DATA_WIDTH-1:0] d_input = feedback_prev - feedback;
+        wire signed [DATA_WIDTH-1:0] d_input = feedback_prev - feedback;
     wire signed [ACC_WIDTH-1:0]  d_term  =
         $signed({{1'b0}, kd}) * d_input;
- 
+
+    // Pipeline stage: register P and D terms so the multiplies don't
+    // chain directly into the final add + clamp in the same cycle.
+    // (I term is already registered via 'integrator'.)
+    reg signed [ACC_WIDTH-1:0] p_term_r, d_term_r;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            p_term_r <= {ACC_WIDTH{1'b0}};
+            d_term_r <= {ACC_WIDTH{1'b0}};
+        end else if (enable) begin
+            p_term_r <= p_term;
+            d_term_r <= d_term;
+        end
+    end
+
     wire signed [ACC_WIDTH-1:0] sum_raw =
-        (p_term + integrator + d_term) >>> 8;
+        (p_term_r + integrator + d_term_r) >>> 8;
  
     // FIX: proper sign-extension for saturation limits
     wire signed [ACC_WIDTH-1:0] max_ext =
