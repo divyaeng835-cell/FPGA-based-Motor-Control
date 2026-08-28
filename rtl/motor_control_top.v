@@ -75,9 +75,15 @@ module motor_control_top #(
     // scaled down and clamped to a valid 0..255 modulation range.
     localparam signed [15:0] MOD_BASE = 16'sd200;
     wire signed [15:0] mod_idx_sum = MOD_BASE + (pid_output >>> 3);
-    wire [7:0] modulation_idx_dyn = (mod_idx_sum < 16'sd0)   ? 8'd0   :
-                                     (mod_idx_sum > 16'sd255) ? 8'd255 :
-                                     mod_idx_sum[7:0];
+    reg [7:0] modulation_idx_dyn;
+    always @(posedge clk or negedge rst_n) begin
+       if (!rst_n)
+         modulation_idx_dyn <= 8'd200;
+       else
+         modulation_idx_dyn <= (mod_idx_sum < 16'sd0)   ? 8'd0   :
+                               (mod_idx_sum > 16'sd255) ? 8'd255 :
+                               mod_idx_sum[7:0];
+    end
 
     // Protection
     wire        pwm_inhibit;
