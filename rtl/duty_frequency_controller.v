@@ -144,9 +144,18 @@ module duty_frequency_controller #(
     // Approximation: duty = (sine * mod * period) >> 16
     // FIX: use 25-bit intermediate to avoid truncation (8+8+16=32 internal)
     // =========================================================================
-    wire [31:0] da_raw = (sine_a_r * modulation_idx * pwm_period) >> 16;
-    wire [31:0] db_raw = (sine_b_r * modulation_idx * pwm_period) >> 16;
-    wire [31:0] dc_raw = (sine_c_r * modulation_idx * pwm_period) >> 16;
+    // Stage 1: multiply sine by modulation index, register the result
+   reg [15:0] mod_a_r, mod_b_r, mod_c_r;
+   always @(posedge clk) begin
+     mod_a_r <= sine_a_r * modulation_idx;
+     mod_b_r <= sine_b_r * modulation_idx;
+     mod_c_r <= sine_c_r * modulation_idx;
+   end
+
+// Stage 2: multiply that result by pwm_period (now only ONE multiply per cycle)
+   wire [31:0] da_raw = (mod_a_r * pwm_period) >> 16;
+   wire [31:0] db_raw = (mod_b_r * pwm_period) >> 16;
+   wire [31:0] dc_raw = (mod_c_r * pwm_period) >> 16;
 
     // =========================================================================
     // Output register + mode mux
