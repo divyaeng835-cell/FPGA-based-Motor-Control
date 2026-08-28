@@ -52,14 +52,39 @@ module virtual_motor_model #(
     reg signed [31:0] omega_s;
  
     // BEMF = Kt * omega / 256  (both in Q8 so divide by 256)
-    wire signed [31:0] ea_s = ($signed({1'b0, kt_scaled}) * omega_s) >>> 16;
+        // BEMF = Kt * omega / 256  (both in Q8 so divide by 256)
+    // Pipeline stage: register ea_s to break the multiply out of the
+    // same-cycle chain that feeds ia_s/ib_s/ic_s. Shared by all 3 phases.
+    wire signed [31:0] ea_comb = ($signed({1'b0, kt_scaled}) * omega_s) >>> 16;
+    reg  signed [31:0] ea_s;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            ea_s <= 32'sd0;
+        else
+            ea_s <= ea_comb;
+    end
     wire signed [31:0] eb_s = ea_s;   // simplified symmetric model
     wire signed [31:0] ec_s = ea_s;
  
     // Resistive drop: R * ia / 256
-    wire signed [31:0] vr_a = ($signed({1'b0, r_scaled}) * ia_s) >>> 8;
-    wire signed [31:0] vr_b = ($signed({1'b0, r_scaled}) * ib_s) >>> 8;
-    wire signed [31:0] vr_c = ($signed({1'b0, r_scaled}) * ic_s) >>> 8;
+        // Resistive drop: R * ia / 256
+    // Pipeline stage: register vr_a/b/c to break the multiply out of the
+    // same-cycle chain that feeds back into ia_s/ib_s/ic_s.
+    wire signed [31:0] vr_a_comb = ($signed({1'b0, r_scaled}) * ia_s) >>> 8;
+    wire signed [31:0] vr_b_comb = ($signed({1'b0, r_scaled}) * ib_s) >>> 8;
+    wire signed [31:0] vr_c_comb = ($signed({1'b0, r_scaled}) * ic_s) >>> 8;
+    reg  signed [31:0] vr_a, vr_b, vr_c;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            vr_a <= 32'sd0;
+            vr_b <= 32'sd0;
+            vr_c <= 32'sd0;
+        end else begin
+            vr_a <= vr_a_comb;
+            vr_b <= vr_b_comb;
+            vr_c <= vr_c_comb;
+        end
+    end
  
     // di/dt numerator: (V - E - R*i)  then divide by L using shift
     wire signed [31:0] dnum_a = $signed({{15{van[DATA_WIDTH]}}, van}) - ea_s - vr_a;
@@ -72,12 +97,34 @@ module virtual_motor_model #(
     wire signed [31:0] dic = dnum_c >>> (L_SHIFT + 4);
  
     // Torque = Kt * Iavg / 256
-    wire signed [31:0] iavg_s = (ia_s + ib_s + ic_s) / 3;
-    wire signed [31:0] torque_s = ($signed({1'b0, kt_scaled}) * iavg_s) >>> 8;
- 
-    // domega = Torque / J (shift by J_SHIFT) then integration step (>>4)
-    wire signed [31:0] domega = torque_s >>> (J_SHIFT + 4);
- 
+    reg signed [31:0] isum_s;
+    always @(posedge clk or negedge rst_n) begin
+      if (!rst_n)
+        isum_s <= 32'sd0;
+      else
+        isum_s <= ia_s + ib_s + ic_s;
+      end
+    // Stage 1: compute and register iavg_s (breaks the two multiplies apart)
+      reg signed [31:0] iavg_r;
+      always @(posedge clk or negedge rst_n) begin
+         if (!rst_n)
+           iavg_r <= 32'sd0;
+         else
+           iavg_r <= (isum_s * 32'sd21845) >>> 16;  // ≈ isum_s / 3
+      end
+
+// Stage 2: torque and domega now use the registered iavg_r (only ONE multiply per cycle)
+      // Pipeline stage: register torque_s so the multiply doesn't chain
+// directly into the omega_s add + clamp in the same cycle.
+      wire signed [31:0] torque_comb = ($signed({1'b0, kt_scaled}) * iavg_r) >>> 8;
+      reg  signed [31:0] torque_s;
+      always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+           torque_s <= 32'sd0;
+        else
+           torque_s <= torque_comb;
+      end
+      wire signed [31:0] domega = torque_s >>> (J_SHIFT + 4);
     // Saturation limits (±8A scaled: 8*256 = 2048)
     localparam signed [31:0] IMAX =  32'sh00000800;
     localparam signed [31:0] IMIN = -32'sh00000800;
